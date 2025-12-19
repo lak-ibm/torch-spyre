@@ -13,8 +13,15 @@
 # limitations under the License.
 
 import math
-from torch_spyre._C import encode_constant
-from torch_spyre._inductor.constants import BYTES_PER_STICK
+from torch_spyre._C import encode_constant, DataFormats
+
+
+def num_bytes(df: DataFormats) -> int:
+    """Try to avoid using this method; it is a bad API due to sub-byte datatypes"""
+    num_elems = df.elems_per_stick()
+    if num_elems > 128:
+        raise RuntimeError(f"sub-byte dataformat {df}")
+    return 128 // num_elems
 
 
 def generate_constant_info(data_format, **kwargs):
@@ -113,9 +120,7 @@ def generate_sfp_op(pointers, *, op, dimensions, inputs, outputs, reduction, **k
                                 + ["out"]
                                 + (["x"] if d3 else []),
                                 "stickDimOrder_": ["out"],
-                                "stickSize_": [
-                                    BYTES_PER_STICK // inputs[0]["dtype"].itemsize
-                                ],
+                                "stickSize_": [inputs[0]["ddtype"].elems_per_stick()],
                             }
                         },
                         "scheduleTree_": [
@@ -145,7 +150,7 @@ def generate_sfp_op(pointers, *, op, dimensions, inputs, outputs, reduction, **k
                                             pointers[tensor["name"]]
                                             + i
                                             * math.prod(dimensions)
-                                            * tensor["dtype"].itemsize
+                                            * num_bytes(tensor["ddtype"])
                                             // cores
                                         )
                                         for i in range(cores)
@@ -181,8 +186,9 @@ def generate_sfp_op(pointers, *, op, dimensions, inputs, outputs, reduction, **k
                                                     },
                                                     {
                                                         "Affine": {
-                                                            "alpha_": BYTES_PER_STICK
-                                                            // tensor["dtype"].itemsize,
+                                                            "alpha_": tensor[
+                                                                "ddtype"
+                                                            ].elems_per_stick(),
                                                             "beta_": 0,
                                                         }
                                                     },
@@ -208,16 +214,16 @@ def generate_sfp_op(pointers, *, op, dimensions, inputs, outputs, reduction, **k
                                                     },
                                                     {
                                                         "factor_": dimensions[-1]
-                                                        // (
-                                                            BYTES_PER_STICK
-                                                            // tensor["dtype"].itemsize
-                                                        )
+                                                        // tensor[
+                                                            "ddtype"
+                                                        ].elems_per_stick()
                                                         // cores,
                                                         "label_": "elem_arr_1",
                                                     },
                                                     {
-                                                        "factor_": BYTES_PER_STICK
-                                                        // tensor["dtype"].itemsize,
+                                                        "factor_": tensor[
+                                                            "ddtype"
+                                                        ].elems_per_stick(),
                                                         "label_": "elem_arr_0",
                                                     },
                                                 ],
@@ -349,7 +355,7 @@ def generate_sfp_op(pointers, *, op, dimensions, inputs, outputs, reduction, **k
                                     else []
                                 )
                                 + tensor["scale"][1:-1],
-                                "wordLength": tensor["dtype"].itemsize,
+                                "wordLength": num_bytes(tensor["ddtype"]),
                                 "dataFormat_": tensor["ddtype"].name,
                                 "memOrg_": {
                                     "hbm": {"isPresent": 1},
@@ -444,23 +450,17 @@ def generate_matmul(pointers, *, op, dimensions, inputs, outputs, **kwargs):
                             "INPUT": {
                                 "layoutDimOrder_": ["mb", "in"],
                                 "stickDimOrder_": ["in"],
-                                "stickSize_": [
-                                    BYTES_PER_STICK // inputs[0]["dtype"].itemsize
-                                ],
+                                "stickSize_": [inputs[0]["ddtype"].elems_per_stick()],
                             },
                             "OUTPUT": {
                                 "layoutDimOrder_": ["mb", "out"],
                                 "stickDimOrder_": ["out"],
-                                "stickSize_": [
-                                    BYTES_PER_STICK // outputs[0]["dtype"].itemsize
-                                ],
+                                "stickSize_": [outputs[0]["ddtype"].elems_per_stick()],
                             },
                             "KERNEL": {
                                 "layoutDimOrder_": ["in", "out"],
                                 "stickDimOrder_": ["out"],
-                                "stickSize_": [
-                                    BYTES_PER_STICK // inputs[1]["dtype"].itemsize
-                                ],
+                                "stickSize_": [inputs[1]["ddtype"].elems_per_stick()],
                             },
                         },
                         "scheduleTree_": [
@@ -633,7 +633,7 @@ def generate_matmul(pointers, *, op, dimensions, inputs, outputs, **kwargs):
                                             + i
                                             * dimensions[1]
                                             * dimensions[2]
-                                            * inputs[1]["dtype"].itemsize
+                                            * num_bytes(inputs[1]["ddtype"])
                                             // cores
                                         )
                                         for i in range(cores)
@@ -787,7 +787,7 @@ def generate_matmul(pointers, *, op, dimensions, inputs, outputs, **kwargs):
                                             + i
                                             * dimensions[0]
                                             * dimensions[2]
-                                            * outputs[0]["dtype"].itemsize
+                                            * num_bytes(outputs[0]["ddtype"])
                                             // cores
                                         )
                                         for i in range(cores)
@@ -923,7 +923,7 @@ def generate_matmul(pointers, *, op, dimensions, inputs, outputs, **kwargs):
                                 "dsName_": "Tensor0",
                                 "dsType_": "INPUT",
                                 "scale_": inputs[0]["scale"][0:2],
-                                "wordLength": inputs[0]["dtype"].itemsize,
+                                "wordLength": num_bytes(inputs[0]["ddtype"]),
                                 "dataFormat_": inputs[0]["ddtype"].name,
                                 "memOrg_": {
                                     "hbm": {"isPresent": 1},
@@ -935,7 +935,7 @@ def generate_matmul(pointers, *, op, dimensions, inputs, outputs, **kwargs):
                                 "dsName_": "Tensor1",
                                 "dsType_": "KERNEL",
                                 "scale_": inputs[1]["scale"][1:3],
-                                "wordLength": inputs[1]["dtype"].itemsize,
+                                "wordLength": num_bytes(inputs[1]["ddtype"]),
                                 "dataFormat_": inputs[1]["ddtype"].name,
                                 "memOrg_": {
                                     "hbm": {"isPresent": 1},
@@ -950,7 +950,7 @@ def generate_matmul(pointers, *, op, dimensions, inputs, outputs, **kwargs):
                                     outputs[0]["scale"][0],
                                     outputs[0]["scale"][2],
                                 ],
-                                "wordLength": outputs[0]["dtype"].itemsize,
+                                "wordLength": num_bytes(outputs[0]["ddtype"]),
                                 "dataFormat_": outputs[0]["ddtype"].name,
                                 "memOrg_": {
                                     "hbm": {"isPresent": 1},
